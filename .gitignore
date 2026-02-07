@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+downloads/
+.env
+venv/
+.idea/
+.vscode/
+
+# Ignore local data if you don't want to overwrite production data on every deploy
+# ref.json
+# stats.json
