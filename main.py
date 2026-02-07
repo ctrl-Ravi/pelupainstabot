@@ -409,7 +409,7 @@ async def about(update, context):
         "• Music Extraction\n"
         "• Bulk Downloading\n"
         "• 99.9% Uptime\n\n"
-        "👨‍💻 <b>Developer:</b> @{BOT_USERNAME}\n"
+        "👨‍💻 <b>Developer:</b> @pelupabot\n"
         f"🌐 <b>Website:</b> <a href='{STORE}'>store.pelupa.in</a>"
     )
 
