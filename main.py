@@ -1,5 +1,6 @@
 from telegram import Update, ReplyKeyboardMarkup, error
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
 import subprocess
 import os
 import shutil
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 
 # ----- ADD ON TOP -----
 import yt_dlp
+import instaloader
 
 import time
 import asyncio
@@ -250,6 +252,49 @@ def find_mp4(base="downloads"):
     return None
 
 
+# =============== INSTALOADER FALLBACK =================
+
+L = instaloader.Instaloader(
+    download_video_thumbnails=False,
+    save_metadata=False,
+    download_geotags=False,
+    download_comments=False,
+    compress_json=False
+)
+
+def init_instaloader():
+    user = os.getenv("INSTAGRAM_USER")
+    pwd = os.getenv("INSTAGRAM_PASS")
+    
+    if user and pwd:
+        try:
+            print(f"[INIT] Logging in to Instaloader as {user}...")
+            L.login(user, pwd)
+            print("[INIT] Instaloader login success!")
+        except Exception as e:
+            print(f"[ERROR] Instaloader login failed: {e}")
+    else:
+        print("[INIT] No Instagram credentials found. Instaloader will run anonymously (limited).")
+
+def download_instaloader(url, target_dir):
+    try:
+        shortcode = get_shortcode(url)
+        if not shortcode:
+            print("[ERROR] Could not extract shortcode for Instaloader")
+            return None
+
+        print(f"[DEBUG] Instaloader fallback for {shortcode}...")
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        # Download to specific target directory
+        L.download_post(post, target=target_dir)
+        
+        return True
+    except Exception as e:
+        print(f"[ERROR] Instaloader fallback failed: {e}")
+        return False
+
+
 def download(url, uid, mode="video"):
     target = f"downloads/{uid}"
     print(f"[DEBUG] Starting download for {uid} in {target}")
@@ -260,13 +305,44 @@ def download(url, uid, mode="video"):
         url = url.split("?")[0]
 
 
+    # Mobile client simulation to avoid blocks
+    # "ios" seems to work better for some endpoints
+    extractor_args = {
+        'instagram': {
+            'platform': 'ios',
+            'version': '280.0.0.24.116',
+        }
+    }
+
     ydl_opts = {
         'outtmpl': f'{target}/%(id)s.%(ext)s',
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
+        'extractor_args': extractor_args,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'no_cache_dir': True
     }
+
+    # Add cookies if available
+    if not os.path.exists("cookies.txt"):
+        # Allow loading cookies from ENV for secure deployment
+        cookies_content = os.getenv("COOKIES_TXT_CONTENT")
+        if cookies_content:
+            try:
+                with open("cookies.txt", "w") as f:
+                    f.write(cookies_content)
+                print("[INIT] Created cookies.txt from environment variable")
+            except Exception as e:
+                print(f"[ERROR] Failed to create cookies.txt from env: {e}")
+
+    if os.path.exists("cookies.txt"):
+        print(f"[DEBUG] Using cookies.txt for {url}")
+        ydl_opts['cookiefile'] = "cookies.txt"
 
     if mode == "audio":
         # Download best audio directly (m4a/mp3)
@@ -275,19 +351,32 @@ def download(url, uid, mode="video"):
         # Download best video (mp4 preferred)
         ydl_opts['format'] = 'best[ext=mp4][protocol^=http]/best[ext=mp4]/best'
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            print(f"[DEBUG] Downloading with yt-dlp: {url}")
-            ydl.download([url])
-            print(f"[DEBUG] yt-dlp finished.")
-    except Exception as e:
-        print(f"[ERROR] yt-dlp failed: {e}")
-        pass
+    # Retry mechanism
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print(f"[DEBUG] Downloading with yt-dlp (Attempt {attempt+1}): {url}")
+                ydl.download([url])
+                print(f"[DEBUG] yt-dlp finished.")
+                break # Success
+        except Exception as e:
+            print(f"[ERROR] yt-dlp failed (Attempt {attempt+1}): {e}")
+            if attempt == MAX_RETRIES - 1:
+                pass # Last attempt failed
+            else:
+                time.sleep(2) # Wait before retry
     
-    # Check if we found a video
+    # Check if we found a video (from yt-dlp)
     found = find_mp4(target)
     
-    # If no video found, it might be an image post. Try to find/download image.
+    # Fallback 1: Instaloader (Try to get video if yt-dlp failed)
+    if not found:
+        print("[DEBUG] yt-dlp failed. Trying Instaloader...")
+        if download_instaloader(url, target):
+            found = find_mp4(target)
+
+    # Fallback 2: Image (Last resort if no video found)
     if not found:
         print("[DEBUG] No video found, checking for images...")
         try:
@@ -317,7 +406,7 @@ def download(url, uid, mode="video"):
                     found = img_path
         except Exception as e:
              print(f"[ERROR] Image fallback failed: {e}")
-             
+
     print(f"[DEBUG] Found file: {found}")
     return found
 
@@ -645,14 +734,16 @@ async def handle(update: Update, context):
                             parse_mode='HTML'
                         )
                     else:
+                        print(f"[DEBUG] Uploading video: {file_path}")
                         await update.message.reply_video(
                             video=open(file_path, "rb"),
                             caption=caption_text,
                             parse_mode='HTML',
                             supports_streaming=True,
-                            read_timeout=120, 
-                            write_timeout=120
+                            read_timeout=300, 
+                            write_timeout=300
                         )
+                        print("[DEBUG] Upload success")
                 except error.TimedOut:
                     # Ignore timeout if the user ultimately receives the file
                     print(f"[WARN] Upload timed out for {url}, but likely sent.")
@@ -733,15 +824,24 @@ async def handle(update: Update, context):
 
 if __name__ == "__main__":
     keep_alive()  # Start Flask server
+    init_instaloader() # Login to Instaloader
     
+    # Custom request settings for stability
+    request = HTTPXRequest(
+        connection_pool_size=10,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=60,
+        pool_timeout=60,
+    )
+
     app = (
         Application.builder()
-    .token(TOKEN)
-    .concurrent_updates(True)
-    .read_timeout(60)
-    .write_timeout(60)
-    .build()
-)
+        .token(TOKEN)
+        .request(request)
+        .concurrent_updates(True)
+        .build()
+    )
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("video", set_video))
@@ -761,6 +861,8 @@ app.add_handler(CommandHandler("coupon", coupon))
 
 app.add_handler(MessageHandler(filters.TEXT, menu))
 
-app.run_polling()
+# Start polling
+print("✅ Bot is running...")
+app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 

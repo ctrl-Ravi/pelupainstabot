@@ -7,6 +7,9 @@ venv/
 .idea/
 .vscode/
 
+# Sensitive
+cookies.txt
+
 # Ignore local data if you don't want to overwrite production data on every deploy
 # ref.json
 # stats.json
