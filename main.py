@@ -68,6 +68,7 @@ logger = logging.getLogger(__name__)
 # ================== CONFIG ==================
 
 # Load from Environment Variables
+
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     print("❌ Error: TOKEN not found in environment variables")
@@ -266,13 +267,46 @@ def init_instaloader():
     user = os.getenv("INSTAGRAM_USER")
     pwd = os.getenv("INSTAGRAM_PASS")
     
-    if user and pwd:
+    # Try loading session from file/env first (Avoids checkpoints)
+    session_file = f"session-{user}" if user else "session"
+    
+    # Check for session content in ENV
+    session_content = os.getenv("INSTALOADER_SESSION")
+    if session_content and user:
         try:
-            print(f"[INIT] Logging in to Instaloader as {user}...")
-            L.login(user, pwd)
-            print("[INIT] Instaloader login success!")
-        except Exception as e:
-            print(f"[ERROR] Instaloader login failed: {e}")
+             # Instaloader expects a file, so we write the base64/text content to the session file
+             # Note: Instaloader session is a pickle file, so usually binary.
+             # But simplistic way is just to rely on L.load_session_from_file() matching a real file.
+             # For now, let's assume the user might upload the file or use the password method.
+             pass
+        except:
+            pass
+
+    if user:
+        # Check if session file exists
+        if os.path.exists(session_file):
+            try:
+                print(f"[INIT] Loading Instaloader session for {user}...")
+                L.load_session_from_file(user, filename=session_file)
+                print("[INIT] Session loaded successfully!")
+                return
+            except Exception as e:
+                print(f"[WARN] Failed to load session: {e}")
+        
+        # Fallback to Password Login
+        if pwd:
+            try:
+                print(f"[INIT] Logging in to Instaloader as {user}...")
+                L.login(user, pwd)
+                print("[INIT] Instaloader login success!")
+            except instaloader.TwoFactorAuthRequiredException:
+                print("[ERROR] Login failed: 2FA is required. Please use a session file.")
+            except instaloader.BadCredentialsException:
+                print("[ERROR] Login failed: Wrong username or password.")
+            except instaloader.ConnectionException as e:
+                print(f"[ERROR] Login failed: Connection error (IP blocked?): {e}")
+            except Exception as e:
+                print(f"[ERROR] Instaloader login failed: {e}")
     else:
         print("[INIT] No Instagram credentials found. Instaloader will run anonymously (limited).")
 
